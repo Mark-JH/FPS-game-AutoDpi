@@ -22,6 +22,7 @@ local config = {
 local lastTriggerMs = 0
 local lastToggleState = false
 local autoEnabled = true
+local lightState = ""
 
 local function clamp(value, minValue, maxValue)
     if value < minValue then
@@ -60,6 +61,26 @@ local function regionContainsGold(x, y, size)
     return false
 end
 
+local function setBacklight(r, g, b, state)
+    if lightState == state then
+        return
+    end
+    SetBacklightColor(r, g, b)
+    lightState = state
+end
+
+local function setLightGreen()
+    setBacklight(0, 255, 0, "green")
+end
+
+local function setLightYellow()
+    setBacklight(255, 255, 0, "yellow")
+end
+
+local function setLightRed()
+    setBacklight(255, 0, 0, "red")
+end
+
 function OnEvent(event, arg)
     if event == "PROFILE_ACTIVATED" then
         EnablePrimaryMouseButtonEvents(true)
@@ -70,6 +91,7 @@ function OnEvent(event, arg)
     end
 
     if event == "PROFILE_ACTIVATED" then
+        setLightGreen()
         local screenWidth, screenHeight = GetScreenSize()
         local half = math.floor(config.sampleSize / 2)
         local centerX = clamp(math.floor(screenWidth / 2) - half, 0, screenWidth - config.sampleSize)
@@ -81,8 +103,10 @@ function OnEvent(event, arg)
                 autoEnabled = not autoEnabled
                 if autoEnabled then
                     SetMouseDPI(config.targetDPI)
+                    setLightRed()
                 else
                     SetMouseDPI(config.defaultDPI)
+                    setLightGreen()
                 end
             end
             lastToggleState = togglePressed
@@ -90,7 +114,9 @@ function OnEvent(event, arg)
             if autoEnabled and regionContainsGold(centerX, centerY, config.sampleSize) then
                 local nowMs = GetRunningTime()
                 if nowMs - lastTriggerMs >= config.cooldownMs then
+                    setLightYellow()
                     SetMouseDPI(config.targetDPI)
+                    setLightRed()
                     lastTriggerMs = nowMs
                 end
             end

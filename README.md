@@ -15,5 +15,6 @@
 - `defaultDPI`：关闭自动检测后恢复的 DPI，默认 2000。
 - `gold`：金色 RGB 阈值范围，可根据游戏画面调整。
 - `toggleButton`：开关按钮，G502 Lightspeed 侧键2 通常为鼠标按钮 4。
+- 灯光提示：常态为绿色；检测到金色时设置为黄色；切换到目标 DPI（500）时显示红色。
 
 > 注意：G Hub 的 Lua 脚本只能在 Logitech 支持的设备上运行。
