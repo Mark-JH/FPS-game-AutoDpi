@@ -4,8 +4,10 @@
 local config = {
     sampleSize = 10,        -- 采样区域边长（像素）
     targetDPI = 1000,       -- 检测到目标颜色时切换到的 DPI
+    defaultDPI = 1600,      -- 关闭自动检测后恢复的 DPI
     pollIntervalMs = 33,    -- 检测间隔（毫秒）约 30 FPS
     cooldownMs = 500,       -- 冷却时间（毫秒）避免频繁切换
+    toggleButton = 5,       -- 侧键2: G502 Lightspeed 默认是鼠标按钮5
     -- 金色/近似金色的 RGB 阈值范围（可根据游戏画面调整）
     gold = {
         rMin = 180,
@@ -18,6 +20,8 @@ local config = {
 }
 
 local lastTriggerMs = 0
+local lastToggleState = false
+local autoEnabled = true
 
 local function clamp(value, minValue, maxValue)
     if value < minValue then
@@ -72,7 +76,18 @@ function OnEvent(event, arg)
         local centerY = clamp(math.floor(screenHeight / 2) - half, 0, screenHeight - config.sampleSize)
 
         while true do
-            if regionContainsGold(centerX, centerY, config.sampleSize) then
+            local togglePressed = IsMouseButtonPressed(config.toggleButton)
+            if togglePressed and not lastToggleState then
+                autoEnabled = not autoEnabled
+                if autoEnabled then
+                    SetMouseDPI(config.targetDPI)
+                else
+                    SetMouseDPI(config.defaultDPI)
+                end
+            end
+            lastToggleState = togglePressed
+
+            if autoEnabled and regionContainsGold(centerX, centerY, config.sampleSize) then
                 local nowMs = GetRunningTime()
                 if nowMs - lastTriggerMs >= config.cooldownMs then
                     SetMouseDPI(config.targetDPI)
