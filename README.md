@@ -1,4 +1,4 @@
-# Logitech-FPS-game-AutoDpi
+# FPS-game-AutoDpi
 
 本仓库提供一个 **Python** 脚本，用于检测屏幕中心 10 像素范围的颜色，当检测到金色或近似颜色时，降低鼠标 DPI 到目标值，并在屏幕上显示状态与识别区域。
 
