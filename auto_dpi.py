@@ -1,34 +1,58 @@
 import argparse
 import colorsys
 import ctypes
-import subprocess
 import threading
 import time
 import tkinter as tk
 from dataclasses import dataclass
+from ctypes import wintypes
 
 import mss
 from pynput import keyboard
+
+INPUT_MOUSE = 0
+MOUSEEVENTF_LEFTDOWN = 0x0002
+MOUSEEVENTF_LEFTUP = 0x0004
+MOUSEEVENTF_MIDDLEDOWN = 0x0020
+MOUSEEVENTF_MIDDLEUP = 0x0040
+try:
+    ULONG_PTR = wintypes.ULONG_PTR
+except AttributeError:
+    ULONG_PTR = ctypes.c_ulonglong if ctypes.sizeof(ctypes.c_void_p) == 8 else ctypes.c_ulong
+
+
+class MOUSEINPUT(ctypes.Structure):
+    _fields_ = [
+        ("dx", wintypes.LONG),
+        ("dy", wintypes.LONG),
+        ("mouseData", wintypes.DWORD),
+        ("dwFlags", wintypes.DWORD),
+        ("time", wintypes.DWORD),
+        ("dwExtraInfo", ULONG_PTR),
+    ]
+
+
+class INPUT(ctypes.Structure):
+    _fields_ = [("type", wintypes.DWORD), ("mi", MOUSEINPUT)]
+
+
+def send_mouse(flags: int) -> bool:
+    inp = INPUT(type=INPUT_MOUSE, mi=MOUSEINPUT(0, 0, 0, flags, 0, ULONG_PTR(0)))
+    sent = ctypes.windll.user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(inp))
+    return sent == 1
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "检测屏幕中心区域的颜色，当出现金色或近似颜色时，将 DPI 切换到目标值，并在屏幕显示状态。"
+            "检测屏幕中心区域的颜色，识别状态变化时触发鼠标中键，并在屏幕显示状态。"
         )
     )
     parser.add_argument("--sample-size", type=int, default=10, help="采样区域边长（像素）")
-    parser.add_argument("--target-dpi", type=int, default=500, help="检测到目标颜色时切换到的 DPI")
-    parser.add_argument("--default-dpi", type=int, default=2000, help="未触发时使用的 DPI")
     parser.add_argument("--fps", type=float, default=100.0, help="检测频率（每秒次数）")
-    parser.add_argument("--cooldown", type=float, default=0.5, help="触发冷却时间（秒）")
     parser.add_argument("--toggle-key", type=str, default="f8", help="启用/禁用检测的按键（例如 f8）")
-    parser.add_argument(
-        "--dpi-command",
-        type=str,
-        default="",
-        help="设置 DPI 的命令模板，使用 {dpi} 作为占位符",
-    )
+    parser.add_argument("--test-key", type=str, default="f9", help="测试中键点击的按键（例如 f9）")
+    parser.add_argument("--test-left-key", type=str, default="f10", help="测试左键点击的按键（例如 f10）")
     parser.add_argument("--hue-min", type=float, default=35.0, help="金色最小色相（度）")
     parser.add_argument("--hue-max", type=float, default=60.0, help="金色最大色相（度）")
     parser.add_argument("--sat-min", type=float, default=0.4, help="金色最小饱和度（0-1）")
@@ -39,8 +63,10 @@ def parse_args() -> argparse.Namespace:
 @dataclass
 class State:
     enabled: bool = True
-    current_dpi: int = 2000
-    last_trigger: float = 0.0
+    detected: bool = False
+    trigger_count: int = 0
+    test_count: int = 0
+    left_test_count: int = 0
     indicator_color: str = "green"
 
 
@@ -61,31 +87,18 @@ def region_contains_gold(pixels: bytes, hue_min: float, hue_max: float, sat_min:
     return False
 
 
-def run_dpi_command(template: str, dpi: int) -> None:
-    if not template:
+def click_middle() -> None:
+    if send_mouse(MOUSEEVENTF_MIDDLEDOWN) and send_mouse(MOUSEEVENTF_MIDDLEUP):
         return
-    command = template.format(dpi=dpi)
-    subprocess.run(command, shell=True, check=False)
+    ctypes.windll.user32.mouse_event(MOUSEEVENTF_MIDDLEDOWN, 0, 0, 0, 0)
+    ctypes.windll.user32.mouse_event(MOUSEEVENTF_MIDDLEUP, 0, 0, 0, 0)
 
 
-def press_key(key_name: str) -> None:
-    controller = keyboard.Controller()
-    key = getattr(keyboard.Key, key_name, None)
-    if key is None:
-        if key_name.startswith("f") and key_name[1:].isdigit():
-            f_number = int(key_name[1:])
-            if 13 <= f_number <= 24:
-                # Virtual-key codes: F1=0x70, F24=0x87.
-                vk = 0x6F + f_number
-                keycode = keyboard.KeyCode.from_vk(vk)
-                controller.press(keycode)
-                controller.release(keycode)
-                return
-        controller.press(key_name)
-        controller.release(key_name)
+def click_left() -> None:
+    if send_mouse(MOUSEEVENTF_LEFTDOWN) and send_mouse(MOUSEEVENTF_LEFTUP):
         return
-    controller.press(key)
-    controller.release(key)
+    ctypes.windll.user32.mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+    ctypes.windll.user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
 
 
 def set_dpi_awareness() -> None:
@@ -96,6 +109,25 @@ def set_dpi_awareness() -> None:
             ctypes.windll.user32.SetProcessDPIAware()
         except (AttributeError, OSError):
             pass
+
+
+def enable_click_through(root: tk.Tk, transparent_color: str) -> None:
+    try:
+        hwnd = root.winfo_id()
+        ex_style = ctypes.windll.user32.GetWindowLongW(hwnd, -20)
+        ex_style |= 0x00080000 | 0x00000020
+        ctypes.windll.user32.SetWindowLongW(hwnd, -20, ex_style)
+        red16, green16, blue16 = root.winfo_rgb(transparent_color)
+        red = red16 // 257
+        green = green16 // 257
+        blue = blue16 // 257
+        color_key = (blue << 16) | (green << 8) | red
+        ctypes.windll.user32.SetLayeredWindowAttributes(hwnd, color_key, 0, 0x1)
+        root.wm_attributes("-transparentcolor", transparent_color)
+    except OSError:
+        pass
+    except tk.TclError:
+        pass
 
 
 def build_overlay(sample_size: int, monitor: dict) -> tuple[tk.Tk, tk.Canvas, tk.Label, int]:
@@ -114,6 +146,8 @@ def build_overlay(sample_size: int, monitor: dict) -> tuple[tk.Tk, tk.Canvas, tk
     screen_left = monitor.get("left", 0)
     screen_top = monitor.get("top", 0)
     root.geometry(f"{screen_width}x{screen_height}+{screen_left}+{screen_top}")
+    root.update_idletasks()
+    enable_click_through(root, transparent_color)
 
     canvas = tk.Canvas(
         root,
@@ -148,7 +182,10 @@ def build_overlay(sample_size: int, monitor: dict) -> tuple[tk.Tk, tk.Canvas, tk
 def update_overlay(status_label: tk.Label, canvas: tk.Canvas, rect_id: int, state: State) -> None:
     status_text = (
         f"Enable: {'ON' if state.enabled else 'OFF'}\n"
-        f"Current DPI: {state.current_dpi}"
+        f"Detected: {'YES' if state.detected else 'NO'}\n"
+        f"Triggers: {state.trigger_count}\n"
+        f"Test Clicks: {state.test_count}\n"
+        f"Left Tests: {state.left_test_count}"
     )
     status_label.config(text=status_text)
     status_label.config(fg="green")
@@ -160,15 +197,29 @@ def update_overlay(status_label: tk.Label, canvas: tk.Canvas, rect_id: int, stat
         canvas.itemconfig(rect_id, outline="cyan")
 
 
-def listen_toggle_key(state: State, toggle_key: str) -> None:
+def listen_toggle_key(state: State, toggle_key: str, test_key: str, test_left_key: str) -> None:
     def on_press(key):
         try:
             if key == keyboard.Key[toggle_key]:
                 state.enabled = not state.enabled
                 return
+            if key == keyboard.Key[test_key]:
+                click_middle()
+                state.test_count += 1
+                return
+            if key == keyboard.Key[test_left_key]:
+                click_left()
+                state.left_test_count += 1
+                return
         except KeyError:
             if hasattr(key, "char") and key.char == toggle_key:
                 state.enabled = not state.enabled
+            elif hasattr(key, "char") and key.char == test_key:
+                click_middle()
+                state.test_count += 1
+            elif hasattr(key, "char") and key.char == test_left_key:
+                click_left()
+                state.left_test_count += 1
 
     with keyboard.Listener(on_press=on_press) as listener:
         listener.join()
@@ -176,7 +227,7 @@ def listen_toggle_key(state: State, toggle_key: str) -> None:
 
 def main() -> None:
     args = parse_args()
-    state = State(current_dpi=args.default_dpi)
+    state = State()
     set_dpi_awareness()
 
     with mss.mss() as sct:
@@ -185,7 +236,14 @@ def main() -> None:
         overlay_root, canvas, status_label, rect_id = build_overlay(args.sample_size, monitor)
 
         toggle_thread = threading.Thread(
-            target=listen_toggle_key, args=(state, args.toggle_key.lower()), daemon=True
+            target=listen_toggle_key,
+            args=(
+                state,
+                args.toggle_key.lower(),
+                args.test_key.lower(),
+                args.test_left_key.lower(),
+            ),
+            daemon=True,
         )
         toggle_thread.start()
 
@@ -203,33 +261,26 @@ def main() -> None:
             while True:
                 if state.enabled:
                     screenshot = sct.grab(bbox)
-                    if region_contains_gold(
+                    detected = region_contains_gold(
                         screenshot.raw,
                         args.hue_min,
                         args.hue_max,
                         args.sat_min,
                         args.val_min,
-                    ):
-                        now = time.time()
-                        if now - state.last_trigger >= args.cooldown:
-                            state.indicator_color = "yellow"
-                            if state.current_dpi != args.target_dpi:
-                                run_dpi_command(args.dpi_command, args.target_dpi)
-                                state.current_dpi = args.target_dpi
-                                press_key("f20")
-                            state.indicator_color = "red"
-                            state.last_trigger = now
+                    )
+                    if detected:
+                        if not state.detected:
+                            click_middle()
+                            state.trigger_count += 1
+                        state.indicator_color = "red"
                     else:
-                        if state.current_dpi != args.default_dpi:
-                            run_dpi_command(args.dpi_command, args.default_dpi)
-                            state.current_dpi = args.default_dpi
-                            press_key("f21")
+                        if state.detected:
+                            click_middle()
+                            state.trigger_count += 1
                         state.indicator_color = "green"
+                    state.detected = detected
                 else:
-                    if state.current_dpi != args.default_dpi:
-                        run_dpi_command(args.dpi_command, args.default_dpi)
-                        state.current_dpi = args.default_dpi
-                        press_key("f21")
+                    state.detected = False
                     state.indicator_color = "green"
 
                 update_overlay(status_label, canvas, rect_id, state)
