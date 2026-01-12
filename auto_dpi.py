@@ -3,7 +3,6 @@ import colorsys
 import ctypes
 import threading
 import time
-import tkinter as tk
 from dataclasses import dataclass
 from ctypes import wintypes
 
@@ -67,7 +66,6 @@ class State:
     trigger_count: int = 0
     test_count: int = 0
     left_test_count: int = 0
-    indicator_color: str = "green"
 
 
 def is_gold_like(rgb: tuple[int, int, int], hue_min: float, hue_max: float, sat_min: float, val_min: float) -> bool:
@@ -111,92 +109,6 @@ def set_dpi_awareness() -> None:
             pass
 
 
-def enable_click_through(root: tk.Tk, transparent_color: str) -> None:
-    try:
-        hwnd = root.winfo_id()
-        ex_style = ctypes.windll.user32.GetWindowLongW(hwnd, -20)
-        ex_style |= 0x00080000 | 0x00000020
-        ctypes.windll.user32.SetWindowLongW(hwnd, -20, ex_style)
-        red16, green16, blue16 = root.winfo_rgb(transparent_color)
-        red = red16 // 257
-        green = green16 // 257
-        blue = blue16 // 257
-        color_key = (blue << 16) | (green << 8) | red
-        ctypes.windll.user32.SetLayeredWindowAttributes(hwnd, color_key, 0, 0x1)
-        root.wm_attributes("-transparentcolor", transparent_color)
-    except OSError:
-        pass
-    except tk.TclError:
-        pass
-
-
-def build_overlay(sample_size: int, monitor: dict) -> tuple[tk.Tk, tk.Canvas, tk.Label, int]:
-    root = tk.Tk()
-    root.title("AutoDPI Overlay")
-    root.attributes("-topmost", True)
-    root.overrideredirect(True)
-    transparent_color = "magenta"
-    root.configure(bg=transparent_color)
-    try:
-        root.wm_attributes("-transparentcolor", transparent_color)
-    except tk.TclError:
-        pass
-    screen_width = monitor["width"]
-    screen_height = monitor["height"]
-    screen_left = monitor.get("left", 0)
-    screen_top = monitor.get("top", 0)
-    root.geometry(f"{screen_width}x{screen_height}+{screen_left}+{screen_top}")
-    root.update_idletasks()
-    enable_click_through(root, transparent_color)
-
-    canvas = tk.Canvas(
-        root,
-        width=screen_width,
-        height=screen_height,
-        highlightthickness=0,
-        bg=transparent_color,
-    )
-    canvas.pack(fill=tk.BOTH, expand=True)
-
-    half = sample_size // 2
-    center_x = screen_width // 2
-    center_y = screen_height // 2
-    left = center_x - half
-    top = center_y - half
-    right = left + sample_size
-    bottom = top + sample_size
-    rect_id = canvas.create_rectangle(left, top, right, bottom, outline="cyan", width=2)
-
-    status_label = tk.Label(
-        root,
-        text="",
-        bg="black",
-        fg="green",
-        font=("Arial", 12, "bold"),
-        justify="left",
-    )
-    status_label.place(x=10, y=10)
-    return root, canvas, status_label, rect_id
-
-
-def update_overlay(status_label: tk.Label, canvas: tk.Canvas, rect_id: int, state: State) -> None:
-    status_text = (
-        f"Enable: {'ON' if state.enabled else 'OFF'}\n"
-        f"Detected: {'YES' if state.detected else 'NO'}\n"
-        f"Triggers: {state.trigger_count}\n"
-        f"Test Clicks: {state.test_count}\n"
-        f"Left Tests: {state.left_test_count}"
-    )
-    status_label.config(text=status_text)
-    status_label.config(fg="green")
-    if state.indicator_color == "yellow":
-        canvas.itemconfig(rect_id, outline="yellow")
-    elif state.indicator_color == "red":
-        canvas.itemconfig(rect_id, outline="red")
-    else:
-        canvas.itemconfig(rect_id, outline="cyan")
-
-
 def listen_toggle_key(state: State, toggle_key: str, test_key: str, test_left_key: str) -> None:
     def on_press(key):
         try:
@@ -233,8 +145,6 @@ def main() -> None:
     with mss.mss() as sct:
         monitor_index = 1 if len(sct.monitors) > 1 else 0
         monitor = sct.monitors[monitor_index]
-        overlay_root, canvas, status_label, rect_id = build_overlay(args.sample_size, monitor)
-
         toggle_thread = threading.Thread(
             target=listen_toggle_key,
             args=(
@@ -272,20 +182,13 @@ def main() -> None:
                         if not state.detected:
                             click_middle()
                             state.trigger_count += 1
-                        state.indicator_color = "red"
                     else:
                         if state.detected:
                             click_middle()
                             state.trigger_count += 1
-                        state.indicator_color = "green"
                     state.detected = detected
                 else:
                     state.detected = False
-                    state.indicator_color = "green"
-
-                update_overlay(status_label, canvas, rect_id, state)
-                overlay_root.update_idletasks()
-                overlay_root.update()
                 time.sleep(frame_interval)
 
         loop()
